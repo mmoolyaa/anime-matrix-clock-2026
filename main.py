@@ -1,76 +1,130 @@
-from PIL import Image
-from PIL import ImageFont
-from PIL import ImageDraw
-
-from os import system
+from pathlib import Path
+import subprocess
 import signal
 import sys
-
 import time
 from datetime import datetime
 
+from PIL import Image, ImageDraw, ImageFont
 from pynput import keyboard
 
+# ==========================
 # CONFIG
+# ==========================
 
-fontname   = "Hack-Regular.ttf" # Font (must be in same directory)
-fontsize   = 16  # Font size
-width      = 64 # Image size
-height     = 36
-filename   = "time.gif" # Filename of image output
-command    = "asusctl anime pixel-gif -p time.gif" # Command to be run every minute. Make sure the -p is the same as the filename. Put all your fine tweaking here.
-textcolour = (255, 255, 255) # Text colour
-timeformat = "%H:%M" # TODO: if you add %S it will still update every minute not second
-mode       = "RGB"
-keybind    = 269025089 # XF86Launch3
+BASE = Path(__file__).resolve().parent
 
-# END CONFIG
+FONT_PATH = BASE / "Hack-Regular.ttf"
+FONT_SIZE = 16
 
-font = ImageFont.truetype(fontname, fontsize) # Register font
-W,H = (width, height)
+WIDTH = 64
+HEIGHT = 36
 
+IMAGE_PATH = BASE / "file.png"
+
+TIME_FORMAT = "%H:%M"
+TEXT_COLOR = (255, 255, 255)
+BACKGROUND_COLOR = (0, 0, 0)
+MODE = "RGB"
+
+KEYBIND = 269025089  # XF86Launch3
+
+# ==========================
+
+font = ImageFont.truetype(str(FONT_PATH), FONT_SIZE)
 active = True
 
-def main():
-	now = datetime.now() # Get the current time
-	strtime = now.strftime(timeformat) # Get time string
 
-	img = Image.new(mode, (width, height)) # Create new image
-	draw = ImageDraw.Draw(img)
+def run_asusctl(*args):
+    """Run asusctl without raising an exception."""
+    subprocess.run(
+        ["asusctl", "anime", *args],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
 
-	w,h = draw.textsize(strtime, font=font) # Get size of text so we can center it
-	draw.text(((W-w)/2, (H-h)/1.1), strtime, textcolour,font=font) # Draw the text in the center
 
-	img.save(filename)
+def enable_display(enable: bool):
+    run_asusctl("--enable-display", "true" if enable else "false")
 
-	system(command) # Update matrix
 
-def cleanup(signal, frame):
-	system("asusctl anime -e false") # Turn off matrix on sigint
-	sys.exit(0)
+def render_clock():
+    """Render the current time to a PNG."""
+    now = datetime.now()
+    text = now.strftime(TIME_FORMAT)
+
+    img = Image.new(MODE, (WIDTH, HEIGHT), BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
+
+    x = (WIDTH - w) // 2
+    y = int((HEIGHT - h) / 1.1)
+
+    draw.text(
+        (x, y),
+        text,
+        fill=TEXT_COLOR,
+        font=font,
+    )
+
+    img.save(IMAGE_PATH)
+
+
+def update_display():
+    render_clock()
+    run_asusctl(
+        "pixel-image",
+        "--path",
+        str(IMAGE_PATH),
+    )
+
+
+def cleanup(sig, frame):
+    enable_display(False)
+    sys.exit(0)
+
 
 def on_press(key):
-	try: # Get keycode
-		vk = key.vk
-	except AttributeError:
-		vk = key.value.vk
-	if vk == keybind:
-		global active
-		active = not active # Invert active state
-		if active:
-			system("asusctl anime -e true") # Enable display
-			main() # Update display
-		else:
-			system("asusctl anime -e false") # Disable display
+    global active
+
+    try:
+        vk = key.vk
+    except AttributeError:
+        vk = key.value.vk
+
+    if vk == KEYBIND:
+        active = not active
+
+        enable_display(active)
+
+        if active:
+            update_display()
+
+
+def main():
+    enable_display(True)
+
+    signal.signal(signal.SIGINT, cleanup)
+
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
+    last_time = None
+
+    while True:
+        if active:
+            current = datetime.now().strftime(TIME_FORMAT)
+
+            if current != last_time:
+                last_time = current
+                update_display()
+
+        time.sleep(1)
+
 
 if __name__ == "__main__":
-	system("asusctl anime -e true") # Enable display
-	signal.signal(signal.SIGINT, cleanup) # Register SIGINT handler
-	listener = keyboard.Listener( # Register keyboard listener
-		on_press=on_press
-	)
-	listener.start()
-	while True:
-		if active :
-			main()
-		time.sleep(60 - time.time() % 60) # Run at the start of every second
+    main()
